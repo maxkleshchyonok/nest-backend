@@ -3,14 +3,14 @@ import { PrismaService } from 'prisma/prisma.service';
 import { AuthDto } from 'src/domain/dtos/auth.dto';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
-import { jwtSecret } from '../utils/constants';
-import { Request, Response } from 'express'; 
+import { Request, Response } from 'express';
+import { Tokens } from './types/tokens.type';
 
 @Injectable()
 export class AuthService {
     constructor(private prisma: PrismaService, private jwt: JwtService) { }
 
-    async signup(dto: AuthDto) {
+    async signup(dto: AuthDto): Promise<Tokens> {
         const { email, password } = dto;
 
         const foundUser = await this.prisma.user.findUnique({ where: { email } });
@@ -21,17 +21,21 @@ export class AuthService {
 
         const hashedPassword = await this.hashPassword(password);
 
-        await this.prisma.user.create({
+        const newUser = await this.prisma.user.create({
             data: {
                 email,
                 hashedPassword
             }
         });
 
-        return { message: 'Successfully registered!' };
+        const tokens = await this.signToken({ id: newUser.id, email: newUser.email });
+
+        await this.updateRtHash(newUser.id, tokens.refresh_token);
+
+        return tokens;
     }
 
-    async signin(dto: AuthDto, req: Request, res: Response) {
+    async signin(dto: AuthDto): Promise<Tokens> {
         const { email, password } = dto;
 
         const foundUser = await this.prisma.user.findUnique({ where: { email } });
@@ -49,23 +53,40 @@ export class AuthService {
             throw new BadRequestException('Incorrect email or password!');
         }
 
-        const token = await this.signToken({
+        const tokens = await this.signToken({
             id: foundUser.id,
             email: foundUser.email
         });
 
-        if (!token) {
+        if (!tokens) {
             throw new ForbiddenException();
         }
 
-        res.cookie('token', token);
+        await this.updateRtHash(foundUser.id, tokens.refresh_token);
 
-        return res.send({message: 'Successfully logged in!'});
+        //res.cookie('token', tokens);
+
+        return tokens;
+
     }
 
     async signout(req: Request, res: Response) {
         res.clearCookie('token');
-        return res.send({message: 'Successfully logged out!'});
+        return res.send({ message: 'Successfully logged out!' });
+    }
+
+    async logout(userId: string) {
+        await this.prisma.user.updateMany({
+            where: {
+                id: userId,
+                hashedRt: {
+                    not: null,
+                },
+            },
+            data: {
+                hashedRt: null
+            }
+        });
     }
 
     async hashPassword(password: string) {
@@ -78,8 +99,63 @@ export class AuthService {
     }
 
     async signToken(args: { id: string; email: string }) {
-        const payload = args;
-        return this.jwt.signAsync(payload, { secret: jwtSecret })
+        const [at, rt] = await Promise.all([
+            this.jwt.signAsync(
+                {
+                    sub: args.id,
+                    email: args.email
+                },
+                {
+                    secret: 'at-secret',
+                    expiresIn: '60s',
+                },
+            ),
+            this.jwt.signAsync(
+                {
+                    sub: args.id,
+                    email: args.email
+                },
+                {
+                    secret: 'rt-secret',
+                    expiresIn: '5d',
+                }
+            )
+        ]);
+
+        return {
+            access_token: at,
+            refresh_token: rt
+        };
+    }
+
+    async updateRtHash(userId: string, rt: string) {
+        const hash = await this.hashPassword(rt);
+        await this.prisma.user.update({
+            where: {
+                id: userId
+            },
+            data: {
+                hashedRt: hash,
+            }
+        });
+    }
+
+    async refreshTokens(userId: string, rt: string) {
+        const user = await this.prisma.user.findUnique({
+            where: {
+                id: userId,
+            }
+        });
+        if (!user || !user.hashedRt) {
+            throw new ForbiddenException('Access denied');
+        }
+        const rtMatches = bcrypt.compare(rt, user.hashedRt);
+        if (!rtMatches) {
+            throw new ForbiddenException('Access denied')
+        }
+        const tokens = await this.signToken({ id: user.id, email: user.email });
+        await this.updateRtHash(user.id, tokens.refresh_token);
+        return tokens;
     }
 
 }
