@@ -5,6 +5,8 @@ import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { Request, Response } from 'express';
 import { Tokens } from './types/tokens.type';
+import { RolesEnum } from './constants/role.enum';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -14,19 +16,33 @@ export class AuthService {
         const { email, password } = dto;
 
         const foundUser = await this.prisma.user.findUnique({ where: { email } });
+        let role = await this.prisma.role.findUnique({ where: { name: RolesEnum.GUEST } });
 
         if (foundUser) {
             throw new BadRequestException('User already exists');
         }
 
+        if (!role) {
+            role = await this.createGuestRole();
+        }
+
         const hashedPassword = await this.hashPassword(password);
+
+        const newRole = await this.prisma
 
         const newUser = await this.prisma.user.create({
             data: {
                 email,
-                hashedPassword
+                hashedPassword,
+                userRoles: {
+                    connect: {
+                        id: role.id
+                    },
+                }
             }
         });
+
+
 
         const tokens = await this.signToken({ id: newUser.id, email: newUser.email });
 
@@ -156,6 +172,14 @@ export class AuthService {
         const tokens = await this.signToken({ id: user.id, email: user.email });
         await this.updateRtHash(user.id, tokens.refresh_token);
         return tokens;
+    }
+
+    async createGuestRole() {
+        const roleData: Prisma.RoleCreateInput = {
+            name: RolesEnum.GUEST,
+            permissions: ['read'],
+        }
+        return this.prisma.role.create({ data: roleData });
     }
 
 }

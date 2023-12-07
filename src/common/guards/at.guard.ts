@@ -18,6 +18,7 @@ export class AtGuard extends AuthGuard('jwt') {
             return true;
         }
 
+        console.log(super.canActivate(context));
         return super.canActivate(context)
     }
 }

@@ -8,10 +8,21 @@ datasource db {
 }
 
 model User {
-  id             String   @unique @default(uuid())
-  email          String   @unique
+  id             String     @unique @default(uuid())
+  email          String     @unique
   hashedPassword String
+  role_id        String     @db.Uuid
+  userRoles      Role       @relation(fields: [role_id], references: [id])
   hashedRt       String?
-  createdAt      DateTime @default(now())
-  updateAt       DateTime @updatedAt
+  createdAt      DateTime   @default(now())
+  updateAt       DateTime   @updatedAt
+}
+
+model Role {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String     @unique
+  permissions String[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  User        User[]
 }
